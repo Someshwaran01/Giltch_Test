@@ -70,8 +70,8 @@ class PostgreSQLManager:
                 connection_host = db_host
                 if 'supabase.co' in db_host and 'pooler' not in db_host:
                     # Convert direct connection to pooler connection
-                    # db.PROJECT.supabase.co -> aws-0-us-east-1.pooler.supabase.com
-                    connection_host = 'aws-0-us-east-1.pooler.supabase.com'
+                    # db.PROJECT.supabase.co -> aws-0-ap-south-1.pooler.supabase.com
+                    connection_host = 'aws-0-ap-south-1.pooler.supabase.com'
                     db_port = '6543'  # Supabase pooler uses port 6543
                     logger.info(f"✓ Using Supabase IPv4 pooler: {connection_host}:{db_port}")
                 

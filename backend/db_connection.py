@@ -1,11 +1,12 @@
 
-# db_connection.py (Modified for SQLite Fallback)
+# db_connection.py (PostgreSQL for Supabase)
 
 import logging
 import os
 import time
-import configparser
 from dotenv import load_dotenv
+from psycopg2 import pool, Error as PgError
+import psycopg2.extras
 
 load_dotenv()
 
@@ -19,96 +20,56 @@ logging.basicConfig(
 )
 logger = logging.getLogger("DatabaseManager")
 
-# --- AUTO-DETECTION ---
-USE_SQLITE = False
-
-try:
-    import mysql.connector
-    from mysql.connector import pooling, Error
-    # Test connection? No, just assume success until retry fails
-except ImportError:
-    logger.warning("mysql.connector not found. Falling back to SQLite.")
-    USE_SQLITE = True
-
-class MySQLManager:
+class PostgreSQLManager:
+    """PostgreSQL connection manager for Supabase"""
     _instance = None
     
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(MySQLManager, cls).__new__(cls)
+            cls._instance = super(PostgreSQLManager, cls).__new__(cls)
             cls._instance._initialize_pool()
         return cls._instance
 
-    def _initialize_pool(self, database=None):
-        """Initialize MySQL connection pool with retry logic"""
-        max_retries = 3
+    def _initialize_pool(self):
+        """Initialize PostgreSQL connection pool with retry logic"""
+        max_retries = int(os.getenv('DB_MAX_RETRIES', 3))
         retry_delay = 2
         
         for attempt in range(max_retries):
             try:
-                config = configparser.ConfigParser()
-                config_path = os.path.join(os.path.dirname(__file__), 'db_config.ini')
+                # Get database configuration from environment
+                db_host = os.getenv('DB_HOST')
+                db_port = os.getenv('DB_PORT', '5432')
+                db_user = os.getenv('DB_USER', 'postgres')
+                db_password = os.getenv('DB_PASSWORD')
+                db_name = os.getenv('DB_NAME', 'postgres')
+                pool_size = int(os.getenv('DB_POOL_SIZE', 30))
                 
-                base_config = {
-                    "host": os.getenv('DB_HOST', 'localhost'),
-                    "port": int(os.getenv('DB_PORT', 3306)),
-                    "user": os.getenv('DB_USER', 'root'),
-                    "password": os.getenv('DB_PASSWORD', ''),
-                    "charset": "utf8mb4",
-                    "collation": "utf8mb4_unicode_ci",
-                    "connect_timeout": 30,  # Connection timeout in seconds
-                    "autocommit": False,
-                    "pool_reset_session": True
-                }
+                if not db_host or not db_password:
+                    raise ValueError("DB_HOST and DB_PASSWORD must be set in environment variables")
                 
-                # Load from .env (highest priority)
-                if os.path.exists(config_path):
-                    config.read(config_path)
-                    if 'mysql' in config:
-                        read_config = dict(config['mysql'])
-                        # Filter pool-specific keys
-                        for key in ['pool_name', 'pool_size', 'pool_reset_session']:
-                            read_config.pop(key, None)
-                        base_config.update(read_config)
-
-                # Override with explicit environment variables
-                if os.getenv('DB_HOST'): base_config['host'] = os.getenv('DB_HOST')
-                if os.getenv('DB_USER'): base_config['user'] = os.getenv('DB_USER')
-                if os.getenv('DB_PASSWORD') is not None: base_config['password'] = os.getenv('DB_PASSWORD')
-                if os.getenv('DB_NAME'): base_config['database'] = os.getenv('DB_NAME')
+                # Create connection pool
+                self.pool = psycopg2.pool.ThreadedConnectionPool(
+                    minconn=1,
+                    maxconn=pool_size,
+                    host=db_host,
+                    port=db_port,
+                    user=db_user,
+                    password=db_password,
+                    database=db_name,
+                    connect_timeout=int(os.getenv('DB_POOL_TIMEOUT', 30)),
+                    options='-c statement_timeout=30000'  # 30 second query timeout
+                )
                 
-                target_db = database or base_config.pop('database', 'debug_marathon_v3')
-
-                try:
-                    full_config = base_config.copy()
-                    full_config['database'] = target_db
-                    pool_size = int(os.getenv('DB_POOL_SIZE', 30))
-                    
-                    self.pool = mysql.connector.pooling.MySQLConnectionPool(
-                        pool_name="debug_marathon_pool",
-                        pool_size=pool_size,
-                        pool_reset_session=True,
-                        **full_config
-                    )
-                    logger.info(f"Connection pool initialized successfully with database '{target_db}' (attempt {attempt + 1}/{max_retries})")
-                    return  # Success
-                    
-                except Error as e:
-                    if e.errno == 1049:  # Unknown database
-                        logger.warning(f"Database '{target_db}' not found. Connecting to server only.")
-                        base_config.pop('database', None)
-                        self.pool = mysql.connector.pooling.MySQLConnectionPool(
-                            pool_name="debug_marathon_pool",
-                            pool_size=pool_size,
-                            pool_reset_session=True,
-                            **base_config
-                        )
-                        logger.info("Connected to MySQL server without specific database")
-                        return
-                    else:
-                        raise
-                        
-            except Error as e:
+                # Test connection
+                test_conn = self.pool.getconn()
+                test_conn.close()
+                self.pool.putconn(test_conn)
+                
+                logger.info(f"PostgreSQL pool initialized successfully with database '{db_name}' on {db_host} (attempt {attempt + 1}/{max_retries})")
+                return  # Success
+                
+            except Exception as e:
                 if attempt < max_retries - 1:
                     logger.warning(f"Connection attempt {attempt + 1} failed: {e}. Retrying in {retry_delay}s...")
                     time.sleep(retry_delay)
@@ -118,113 +79,114 @@ class MySQLManager:
                     raise
 
     def get_connection(self):
+        """Get a connection from the pool"""
         try:
-            conn = self.pool.get_connection()
-            if conn.is_connected():
-                return conn
-            else:
-                try:
-                    conn.reconnect(attempts=3, delay=2)
-                    return conn
-                except:
-                    return None
-        except Error as e:
+            conn = self.pool.getconn()
+            return conn
+        except Exception as e:
             logger.error(f"Failed to get connection from pool: {e}")
             return None
 
+    def return_connection(self, conn):
+        """Return a connection to the pool"""
+        if conn:
+            try:
+                self.pool.putconn(conn)
+            except Exception as e:
+                logger.error(f"Failed to return connection to pool: {e}")
+
     def execute_query(self, query, params=None):
+        """Execute a SELECT query and return results as list of dicts"""
         conn = self.get_connection()
-        if not conn: return None
+        if not conn:
+            return None
         
-        cursor = conn.cursor(dictionary=True)
+        cursor = None
         try:
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             cursor.execute(query, params or ())
             result = cursor.fetchall()
-            return result
-        except Error as e:
+            # Convert to list of regular dicts
+            return [dict(row) for row in result] if result else []
+        except Exception as e:
             logger.error(f"SELECT Query failed: {e}\nQuery: {query}")
             return None
         finally:
             if cursor:
-                try: cursor.close()
-                except: pass
-            if conn:
-                try: conn.close()
-                except: pass
+                try:
+                    cursor.close()
+                except:
+                    pass
+            self.return_connection(conn)
 
     def execute_update(self, query, params=None):
+        """Execute an INSERT/UPDATE/DELETE query"""
         conn = self.get_connection()
-        if not conn: return False
+        if not conn:
+            return False
         
-        cursor = conn.cursor()
+        cursor = None
         try:
+            cursor = conn.cursor()
             cursor.execute(query, params or ())
             conn.commit()
-            return {"last_id": cursor.lastrowid, "affected": cursor.rowcount}
-        except Error as e:
+            return {"last_id": cursor.lastrowid if hasattr(cursor, 'lastrowid') else None, "affected": cursor.rowcount}
+        except Exception as e:
             conn.rollback()
             logger.error(f"UPDATE Query failed: {e}\nQuery: {query}")
             return False
         finally:
             if cursor:
-                try: cursor.close()
-                except: pass
-            if conn:
-                try: conn.close()
-                except: pass
+                try:
+                    cursor.close()
+                except:
+                    pass
+            self.return_connection(conn)
 
     def init_database(self, schema_file):
+        """Initialize database from SQL file"""
         if not os.path.exists(schema_file):
             logger.error(f"Schema file not found: {schema_file}")
             return False
         
         conn = self.get_connection()
-        if not conn: return False
+        if not conn:
+            return False
         
-        cursor = conn.cursor()
+        cursor = None
         try:
-            with open(schema_file, 'r') as f:
+            cursor = conn.cursor()
+            with open(schema_file, 'r', encoding='utf-8') as f:
                 sql = f.read()
-            statements = sql.split(';')
-            for statement in statements:
-                if statement.strip():
-                    cursor.execute(statement)
+            
+            # Execute SQL (PostgreSQL supports multiple statements)
+            cursor.execute(sql)
             conn.commit()
             logger.info("Database initialized successfully.")
             return True
-        except Error as e:
+        except Exception as e:
+            conn.rollback()
             logger.error(f"Failed to initialize database: {e}")
             return False
         finally:
-            if cursor: cursor.close()
-            if conn: conn.close()
-            
-    def upsert(self, table, data, conflict_keys):
-        # Default MySQL implementation using ON DUPLICATE KEY UPDATE (manual Construction)
-        # This is a fallback helper
-        keys = list(data.keys())
-        columns = ', '.join(keys)
-        placeholders = ', '.join(['%s'] * len(keys))
-        
-        update_clause = ', '.join([f"{k}=VALUES({k})" for k in keys if k not in conflict_keys])
-        
-        if not update_clause:
-            # Just INSERT IGNORE
-            sql = f"INSERT IGNORE INTO {table} ({columns}) VALUES ({placeholders})"
-        else:
-            sql = f"INSERT INTO {table} ({columns}) VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {update_clause}"
-        
-        vals = tuple(data.values())
-        return self.execute_update(sql, vals)
+            if cursor:
+                cursor.close()
+            self.return_connection(conn)
+    
+    def close_all(self):
+        """Close all connections in the pool"""
+        try:
+            if hasattr(self, 'pool') and self.pool:
+                self.pool.closeall()
+                logger.info("All database connections closed")
+        except Exception as e:
+            logger.error(f"Error closing connections: {e}")
 
-# --- FACTORY ---
-
+# Create global database manager instance
 try:
-    # Try initializing MySQL Manager
-    if not USE_SQLITE:
-        _temp = MySQLManager()
-    db_manager = _temp
+    db_manager = PostgreSQLManager()
+    logger.info("Using PostgreSQL database manager for Supabase")
 except Exception as e:
-    logger.warning(f"MySQL Connection Failed ({e}). Switching to SQLite.")
-    from db_sqlite import sqlite_manager
-    db_manager = sqlite_manager
+    logger.error(f"Failed to initialize PostgreSQL manager: {e}")
+    logger.error("Please ensure DB_HOST, DB_PASSWORD, and other Supabase credentials are set in environment variables")
+    raise

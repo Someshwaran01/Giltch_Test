@@ -116,13 +116,6 @@ class MySQLManager:
                 else:
                     logger.error(f"Failed to initialize connection pool after {max_retries} attempts: {e}")
                     raise
-                        **base_config
-                    )
-                else:
-                    raise
-        except Error as e:
-            logger.error(f"Error initializing connection pool: {e}")
-            raise
 
     def get_connection(self):
         try:

@@ -60,30 +60,23 @@ class PostgreSQLManager:
                     logger.error("  2. Select your 'debug-marathon' service")
                     logger.error("  3. Click 'Environment' tab")
                     logger.error("  4. Add these variables:")
-                    logger.error(f"     DB_HOST=db.huvpruzfbsfdrkozdzdk.supabase.co")
+                    logger.error(f"     DB_HOST=aws-0-us-east-1.pooler.supabase.com")
                     logger.error(f"     DB_PASSWORD=<your-supabase-password>")
                     logger.error("="*60)
                     raise ValueError("DB_HOST and DB_PASSWORD must be set in environment variables")
                 
-                # Try to resolve hostname to IPv4
-                resolved_ip = None
-                try:
-                    # Force IPv4 resolution using socket
-                    addr_info = socket.getaddrinfo(db_host, int(db_port), socket.AF_INET, socket.SOCK_STREAM)
-                    if addr_info:
-                        resolved_ip = addr_info[0][4][0]
-                        logger.info(f"✓ Resolved {db_host} to IPv4: {resolved_ip}")
-                except socket.gaierror as e:
-                    logger.warning(f"⚠ DNS resolution failed: {e}")
-                    logger.warning(f"Will attempt direct connection to {db_host}")
+                # For Supabase, use connection pooler with IPv4-only endpoint
+                # Format: aws-0-[region].pooler.supabase.com
+                connection_host = db_host
+                if 'supabase.co' in db_host and 'pooler' not in db_host:
+                    # Convert direct connection to pooler connection
+                    # db.PROJECT.supabase.co -> aws-0-us-east-1.pooler.supabase.com
+                    connection_host = 'aws-0-us-east-1.pooler.supabase.com'
+                    db_port = '6543'  # Supabase pooler uses port 6543
+                    logger.info(f"✓ Using Supabase IPv4 pooler: {connection_host}:{db_port}")
                 
-                # Build connection string - use hostaddr if we have IPv4, otherwise use host
-                if resolved_ip:
-                    # hostaddr forces specific IP, avoids IPv6
-                    conninfo = f"hostaddr={resolved_ip} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout={os.getenv('DB_POOL_TIMEOUT', 30)}"
-                else:
-                    # Fallback to hostname
-                    conninfo = f"host={db_host} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout={os.getenv('DB_POOL_TIMEOUT', 30)}"
+                # Build connection string for direct IPv4 connection
+                conninfo = f"host={connection_host} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout=30 options='-c statement_timeout=30000'"
                 
                 # Create connection pool (psycopg3 style)
                 self.pool = ConnectionPool(
@@ -99,8 +92,7 @@ class PostgreSQLManager:
                     with conn.cursor() as cur:
                         cur.execute("SELECT 1")
                 
-                connection_target = resolved_ip if resolved_ip else db_host
-                logger.info(f"✓ PostgreSQL pool initialized successfully with database '{db_name}' on {connection_target} (attempt {attempt + 1}/{max_retries})")
+                logger.info(f"✓ PostgreSQL pool initialized successfully with database '{db_name}' on {connection_host}:{db_port} (attempt {attempt + 1}/{max_retries})")
                 return  # Success
                 
             except Exception as e:

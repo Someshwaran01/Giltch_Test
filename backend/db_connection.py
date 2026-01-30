@@ -3,6 +3,7 @@
 
 import logging
 import os
+import time
 import configparser
 from dotenv import load_dotenv
 
@@ -39,65 +40,82 @@ class MySQLManager:
         return cls._instance
 
     def _initialize_pool(self, database=None):
-        try:
-            config = configparser.ConfigParser()
-            config_path = os.path.join(os.path.dirname(__file__), 'db_config.ini')
-            
-            base_config = {
-                "host": os.getenv('DB_HOST', 'localhost'),
-                "port": int(os.getenv('DB_PORT', 3306)),
-                "user": os.getenv('DB_USER', 'root'),
-                "password": os.getenv('DB_PASSWORD', ''),
-                "charset": "utf8mb4",
-                "collation": "utf8mb4_unicode_ci"
-            }
-            
-            # Ini overrides defaults, but ENV should override INI in a pure 12-factor app?
-            # User Task: "Move the database root password... into a .env file... load them."
-            # So Env > Ini.
-            
-            if os.path.exists(config_path):
-                config.read(config_path)
-                if 'mysql' in config:
-                    read_config = dict(config['mysql'])
-                    # Filter keys
-                    for key in ['pool_name', 'pool_size', 'pool_reset_session']:
-                        read_config.pop(key, None)
-                    # Update base with INI? No, Env should win.
-                    # Logic: Base (Env or Default) -> Update with INI (Legacy) -> Override with explicit Env if present?
-                    # Let's assume INI is legacy/local. ENV is prod.
-                    # If Env vars are set, they satisfy base_config.
-                    # Let's just use Env vars if they exist, else INI.
-                    # Simple way: Load INI first, then Env overrides.
-                    base_config.update(read_config)
-
-            # Override with Env if explicitly set (Reloading Env to be sure)
-            if os.getenv('DB_HOST'): base_config['host'] = os.getenv('DB_HOST')
-            if os.getenv('DB_USER'): base_config['user'] = os.getenv('DB_USER')
-            if os.getenv('DB_PASSWORD') is not None: base_config['password'] = os.getenv('DB_PASSWORD')
-            if os.getenv('DB_NAME'): base_config['database'] = os.getenv('DB_NAME')
-            
-            target_db = database or base_config.pop('database', 'debug_marathon_v3')
-
-
+        """Initialize MySQL connection pool with retry logic"""
+        max_retries = 3
+        retry_delay = 2
+        
+        for attempt in range(max_retries):
             try:
-                full_config = base_config.copy()
-                full_config['database'] = target_db
-                self.pool = mysql.connector.pooling.MySQLConnectionPool(
-                    pool_name="debug_marathon_pool",
-                    pool_size=30,
-                    pool_reset_session=True,
-                    **full_config
-                )
-                logger.info(f"Connection pool initialized with database '{target_db}'.")
-            except Error as e:
-                if e.errno == 1049: # Unknown database
-                    logger.warning(f"Database '{target_db}' not found. Connecting to server only.")
-                    base_config.pop('database', None)
+                config = configparser.ConfigParser()
+                config_path = os.path.join(os.path.dirname(__file__), 'db_config.ini')
+                
+                base_config = {
+                    "host": os.getenv('DB_HOST', 'localhost'),
+                    "port": int(os.getenv('DB_PORT', 3306)),
+                    "user": os.getenv('DB_USER', 'root'),
+                    "password": os.getenv('DB_PASSWORD', ''),
+                    "charset": "utf8mb4",
+                    "collation": "utf8mb4_unicode_ci",
+                    "connect_timeout": 30,  # Connection timeout in seconds
+                    "autocommit": False,
+                    "pool_reset_session": True
+                }
+                
+                # Load from .env (highest priority)
+                if os.path.exists(config_path):
+                    config.read(config_path)
+                    if 'mysql' in config:
+                        read_config = dict(config['mysql'])
+                        # Filter pool-specific keys
+                        for key in ['pool_name', 'pool_size', 'pool_reset_session']:
+                            read_config.pop(key, None)
+                        base_config.update(read_config)
+
+                # Override with explicit environment variables
+                if os.getenv('DB_HOST'): base_config['host'] = os.getenv('DB_HOST')
+                if os.getenv('DB_USER'): base_config['user'] = os.getenv('DB_USER')
+                if os.getenv('DB_PASSWORD') is not None: base_config['password'] = os.getenv('DB_PASSWORD')
+                if os.getenv('DB_NAME'): base_config['database'] = os.getenv('DB_NAME')
+                
+                target_db = database or base_config.pop('database', 'debug_marathon_v3')
+
+                try:
+                    full_config = base_config.copy()
+                    full_config['database'] = target_db
+                    pool_size = int(os.getenv('DB_POOL_SIZE', 30))
+                    
                     self.pool = mysql.connector.pooling.MySQLConnectionPool(
                         pool_name="debug_marathon_pool",
-                        pool_size=30,
+                        pool_size=pool_size,
                         pool_reset_session=True,
+                        **full_config
+                    )
+                    logger.info(f"Connection pool initialized successfully with database '{target_db}' (attempt {attempt + 1}/{max_retries})")
+                    return  # Success
+                    
+                except Error as e:
+                    if e.errno == 1049:  # Unknown database
+                        logger.warning(f"Database '{target_db}' not found. Connecting to server only.")
+                        base_config.pop('database', None)
+                        self.pool = mysql.connector.pooling.MySQLConnectionPool(
+                            pool_name="debug_marathon_pool",
+                            pool_size=pool_size,
+                            pool_reset_session=True,
+                            **base_config
+                        )
+                        logger.info("Connected to MySQL server without specific database")
+                        return
+                    else:
+                        raise
+                        
+            except Error as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Connection attempt {attempt + 1} failed: {e}. Retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    logger.error(f"Failed to initialize connection pool after {max_retries} attempts: {e}")
+                    raise
                         **base_config
                     )
                 else:

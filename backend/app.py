@@ -6,9 +6,26 @@ def create_app(config_class=Config):
     app = Flask(__name__, static_folder='../frontend', static_url_path='')
     app.config.from_object(config_class)
 
-    # Initialize extensions
-    cors.init_app(app, resources={r"/api/*": {"origins": app.config.get('FRONTEND_URL', '*')}})
-    socketio.init_app(app, cors_allowed_origins="*")
+    # Initialize extensions with secure CORS configuration
+    cors.init_app(app, resources={
+        r"/api/*": {
+            "origins": app.config.get('ALLOWED_ORIGINS', [app.config.get('FRONTEND_URL', 'http://localhost:5000')]),
+            "supports_credentials": True,
+            "allow_headers": ["Content-Type", "Authorization"],
+            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+        }
+    })
+    socketio.init_app(app, cors_allowed_origins=app.config.get('ALLOWED_ORIGINS', '*'))
+    
+    # Add security headers to all responses
+    @app.after_request
+    def add_security_headers(response):
+        for header, value in app.config.get('SECURITY_HEADERS', {}).items():
+            response.headers[header] = value
+        return response
+    
+    # Add request size limit (10MB)
+    app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024
 
     # Register Blueprints
     from routes.auth import bp as auth_bp
@@ -71,6 +88,7 @@ def create_app(config_class=Config):
     def handle_global_error(e):
         from flask import request
         from werkzeug.exceptions import HTTPException
+        import logging
         
         # Determine status code
         code = 500
@@ -82,7 +100,13 @@ def create_app(config_class=Config):
             # Only log stack trace for 500s
             if code >= 500:
                 import traceback
-                traceback.print_exc()
+                logging.error(f"Internal error on {request.path}: {traceback.format_exc()}")
+                # Don't leak internal error details in production
+                if app.config.get('DEBUG'):
+                    error_msg = str(e)
+                else:
+                    error_msg = 'Internal server error. Please try again later.'
+                return jsonify({'error': error_msg, 'success': False}), code
             return jsonify({'error': str(e), 'success': False}), code
 
         # Static/Page Requests -> HTML (default behavior)
@@ -90,8 +114,8 @@ def create_app(config_class=Config):
             return e
             
         import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e), 'message': 'Internal Server Error'}), 500
+        logging.error(f"Internal error: {traceback.format_exc()}")
+        return jsonify({'error': 'Internal Server Error', 'message': 'An unexpected error occurred'}), 500
 
     @app.route('/api/health')
     def health_check():

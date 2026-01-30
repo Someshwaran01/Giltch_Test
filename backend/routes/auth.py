@@ -3,28 +3,40 @@ from db_connection import db_manager
 from auth_middleware import admin_required
 import jwt
 import datetime
+import logging
 from config import Config
-from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.security import generate_password_hash
 import uuid
+from utils.rate_limiter import rate_limiter
+from utils.password_utils import password_manager
 
 bp = Blueprint('auth', __name__)
+logger = logging.getLogger(__name__)
 
 def create_token(user_id, role='participant'):
+    """Create JWT token with configurable expiry"""
     payload = {
         'sub': user_id,
         'role': role,
         'iat': datetime.datetime.utcnow(),
-        'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)
+        'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=Config.JWT_EXPIRY_HOURS)
     }
-    return jwt.encode(payload, Config.SECRET_KEY, algorithm='HS256')
+    return jwt.encode(payload, Config.SECRET_KEY, algorithm=Config.JWT_ALGORITHM)
 
 @bp.route('/participant/login', methods=['POST'])
 def participant_login():
     data = request.get_json()
-    pid = data.get('participant_id')
+    pid = data.get('participant_id', '').strip()
     
     if not pid:
         return jsonify({'error': 'Participant ID is required'}), 400
+    
+    # Rate limiting check
+    if not rate_limiter.is_allowed(f'participant_login:{pid}'):
+        wait_time = rate_limiter.get_remaining_time(f'participant_login:{pid}')
+        return jsonify({
+            'error': f'Too many login attempts. Please try again in {wait_time} seconds.'
+        }), 429
 
     try:
         # Check by user_id (int) or username (str)
@@ -36,21 +48,25 @@ def participant_login():
             user_data = db_manager.execute_query(query, (pid,))
             
         if not user_data:
+            logger.warning(f"Participant not found: {pid}")
             return jsonify({'error': 'Participant not found'}), 404
 
         user = user_data[0]
         
         if user.get('status') == 'disqualified':
-            return jsonify({'error': 'You have been disqualified for violations.'}), 403
+            return jsonify({'error': 'You have been disqualified for violations'}), 403
 
         # Check Proctoring Table Disqualification
         p_query = "SELECT is_disqualified FROM participant_proctoring WHERE participant_id=%s"
         proc_status = db_manager.execute_query(p_query, (user['username'],))
         if proc_status and proc_status[0].get('is_disqualified'):
-             return jsonify({'error': 'You have been permanently disqualified for proctoring violations.'}), 403
+            return jsonify({'error': 'You have been permanently disqualified for proctoring violations'}), 403
 
         if user.get('status') == 'held':
-            return jsonify({'error': 'Your status is currently on hold. You have not qualified for the next level.'}), 403
+            return jsonify({'error': 'Your status is currently on hold. You have not qualified for the next level'}), 403
+        
+        # Success - reset rate limit
+        rate_limiter.reset(f'participant_login:{pid}')
 
         token = create_token(user['username'], 'participant')
         
@@ -122,45 +138,44 @@ def participant_login():
 @bp.route('/leader/login', methods=['POST'])
 def leader_login():
     data = request.get_json()
-    username = data.get('username')
-    password = data.get('password')
+    username = data.get('username', '').strip()
+    password = data.get('password', '')
 
     if not username or not password:
-        return jsonify({'error': 'Username and Password are required'}), 400
+        return jsonify({'error': 'Username and password are required'}), 400
+    
+    # Rate limiting check
+    if not rate_limiter.is_allowed(f'leader_login:{username}'):
+        wait_time = rate_limiter.get_remaining_time(f'leader_login:{username}')
+        return jsonify({
+            'error': f'Too many login attempts. Please try again in {wait_time} seconds.'
+        }), 429
 
     try:
-        user_query = db_manager.execute_query("SELECT * FROM users WHERE username=%s AND role='leader'", (username,))
+        user_query = db_manager.execute_query(
+            "SELECT * FROM users WHERE username=%s AND role='leader'",
+            (username,)
+        )
+        
         if not user_query:
-             return jsonify({'error': 'Invalid credentials or not authorized as LEADER'}), 401
+            logger.warning(f"Failed leader login attempt for username: {username}")
+            return jsonify({'error': 'Invalid credentials'}), 401
 
         user = user_query[0]
         
-        # Verify Password - Support SHA256 (64 hex chars) and Werkzeug hashes
-        valid = False
-        password_hash = user['password_hash']
-        
-        # Check if it's a SHA256 hash (64 characters, all hex)
-        if len(password_hash) == 64 and all(c in '0123456789abcdef' for c in password_hash.lower()):
-            import hashlib
-            if password_hash == hashlib.sha256(password.encode()).hexdigest():
-                valid = True
-        # Check if it's a scrypt hash (starts with scrypt:)
-        elif password_hash.startswith('scrypt:'):
-            valid = check_password_hash(password_hash, password)
-        # Otherwise try Werkzeug check (pbkdf2, etc.)
-        else:
-            try:
-                valid = check_password_hash(password_hash, password)
-            except:
-                pass
-
-        if not valid:
-             return jsonify({'error': 'Invalid credentials'}), 401
+        # Verify password using centralized password manager
+        if not password_manager.verify_password(password, user['password_hash']):
+            logger.warning(f"Invalid password for leader: {username}")
+            return jsonify({'error': 'Invalid credentials'}), 401
              
         if user.get('admin_status') != 'APPROVED':
-             return jsonify({'error': 'Your leader account is not approved.'}), 403
-             
+            return jsonify({'error': 'Your leader account is not approved'}), 403
+        
+        # Success - reset rate limit
+        rate_limiter.reset(f'leader_login:{username}')
+        
         token = create_token(user['username'], 'leader')
+        logger.info(f"Leader {username} logged in successfully")
         
         return jsonify({
             'success': True, 
@@ -171,118 +186,100 @@ def leader_login():
             }
         })
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Leader login error for {username}: {str(e)}")
+        return jsonify({'error': 'Login failed. Please try again.'}), 500
 
 @bp.route('/admin/login', methods=['POST'])
 def admin_login():
     data = request.get_json()
-    username = data.get('username')
-    password = data.get('password')
-
-    print(f"[DEBUG] Admin login attempt - Username: {username}, Password length: {len(password) if password else 0}")
+    username = data.get('username', '').strip()
+    password = data.get('password', '')
 
     if not username or not password:
-        return jsonify({'error': 'Username and Password are required'}), 400
+        return jsonify({'error': 'Username and password are required'}), 400
+    
+    # Rate limiting check
+    if not rate_limiter.is_allowed(f'admin_login:{username}'):
+        wait_time = rate_limiter.get_remaining_time(f'admin_login:{username}')
+        logger.warning(f"Rate limit exceeded for admin login: {username}")
+        return jsonify({
+            'error': f'Too many login attempts. Please try again in {wait_time} seconds.'
+        }), 429
 
     try:
-        user_query = db_manager.execute_query("SELECT * FROM users WHERE username=%s AND role='admin'", (username,))
-        
-        print(f"[DEBUG] Query result: {len(user_query) if user_query else 0} users found")
+        user_query = db_manager.execute_query(
+            "SELECT * FROM users WHERE username=%s AND role='admin'",
+            (username,)
+        )
             
-        if user_query:
-            user = user_query[0]
-            
-            print(f"[DEBUG] User found - ID: {user.get('user_id')}, Status: {user.get('admin_status')}")
-            print(f"[DEBUG] Password hash length: {len(user['password_hash'])}")
-            print(f"[DEBUG] Password hash (first 20): {user['password_hash'][:20]}...")
-            
-            # Status Check
-            status = user.get('admin_status', 'PENDING')
-            if status == 'PENDING':
-                print(f"[DEBUG] Status check failed: PENDING")
-                return jsonify({'error': '⏳ Your admin request is pending approval.'}), 403
-            if status == 'REJECTED':
-                print(f"[DEBUG] Status check failed: REJECTED")
-                return jsonify({'error': '❌ Your admin request has been rejected.'}), 403
-            
-            # Verify Password - Support SHA256 (64 hex chars) and Werkzeug hashes
-            valid = False
-            password_hash = user['password_hash']
-            
-            # Check if it's a SHA256 hash (64 characters, all hex)
-            if len(password_hash) == 64 and all(c in '0123456789abcdef' for c in password_hash.lower()):
-                print(f"[DEBUG] Detected as SHA256 hash")
-                import hashlib
-                input_hash = hashlib.sha256(password.encode()).hexdigest()
-                print(f"[DEBUG] Input hash: {input_hash[:20]}...")
-                if password_hash == input_hash:
-                    valid = True
-                    print(f"[DEBUG] SHA256 verification: PASSED")
-                else:
-                    print(f"[DEBUG] SHA256 verification: FAILED")
-            # Check if it's a scrypt hash (starts with scrypt:)
-            elif password_hash.startswith('scrypt:'):
-                print(f"[DEBUG] Detected as Scrypt hash")
-                valid = check_password_hash(password_hash, password)
-                print(f"[DEBUG] Scrypt verification: {'PASSED' if valid else 'FAILED'}")
-            # Otherwise try Werkzeug check (pbkdf2, etc.)
-            else:
-                print(f"[DEBUG] Trying Werkzeug verification")
-                try:
-                    valid = check_password_hash(password_hash, password)
-                    print(f"[DEBUG] Werkzeug verification: {'PASSED' if valid else 'FAILED'}")
-                except Exception as e:
-                    print(f"[DEBUG] Werkzeug verification error: {e}")
-                    pass
-
-            if valid:
-                print(f"[DEBUG] Login successful for {username}")
-                return jsonify({
-                    'success': True,
-                    'token': create_token(user['username'], 'admin'),
-                    'user': {
-                        'username': user['username'],
-                        'name': user['full_name']
-                    }
-                })
-            else:
-                print(f"[DEBUG] Login failed - Invalid password")
-                return jsonify({'error': 'Invalid credentials'}), 401
-        else:
-            print(f"[DEBUG] No user found with username: {username}")
+        if not user_query:
+            logger.warning(f"Failed admin login attempt - user not found: {username}")
             return jsonify({'error': 'Invalid credentials'}), 401
+        
+        user = user_query[0]
+        
+        # Status Check
+        status = user.get('admin_status', 'PENDING')
+        if status == 'PENDING':
+            return jsonify({'error': '⏳ Your admin request is pending approval'}), 403
+        if status == 'REJECTED':
+            return jsonify({'error': '❌ Your admin request has been rejected'}), 403
+        
+        # Verify password using centralized password manager
+        if not password_manager.verify_password(password, user['password_hash']):
+            logger.warning(f"Invalid password for admin: {username}")
+            return jsonify({'error': 'Invalid credentials'}), 401
+        
+        # Success - reset rate limit
+        rate_limiter.reset(f'admin_login:{username}')
+        logger.info(f"Admin {username} logged in successfully")
+        
+        return jsonify({
+            'success': True,
+            'token': create_token(user['username'], 'admin'),
+            'user': {
+                'username': user['username'],
+                'name': user['full_name']
+            }
+        })
+        
     except Exception as e:
-        print(f"[ERROR] Admin login exception: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Admin login error for {username}: {str(e)}", exc_info=True)
+        return jsonify({'error': 'Login failed. Please try again.'}), 500
 
 @bp.route('/admin/register', methods=['POST'])
 def register_admin():
     data = request.get_json()
-    username = data.get('username')
-    password = data.get('password')
-    full_name = data.get('full_name')
-    email = data.get('email')
+    username = data.get('username', '').strip()
+    password = data.get('password', '')
+    full_name = data.get('full_name', '').strip()
+    email = data.get('email', '').strip()
     
     if not all([username, password, email]):
         return jsonify({'error': 'Username, password and email are required'}), 400
+    
+    # Validate password strength
+    if len(password) < 8:
+        return jsonify({'error': 'Password must be at least 8 characters long'}), 400
         
     # Check if exists
     chk = db_manager.execute_query("SELECT user_id FROM users WHERE username=%s", (username,))
     if chk:
         return jsonify({'error': 'Username already exists'}), 400
-        
-    pwd_hash = generate_password_hash(password)
+    
+    # Use centralized password hashing
+    pwd_hash = password_manager.hash_password(password, method='pbkdf2')
     
     try:
         db_manager.execute_update(
             "INSERT INTO users (username, email, password_hash, full_name, role, admin_status, created_at) VALUES (%s, %s, %s, %s, 'admin', 'PENDING', NOW())",
             (username, email, pwd_hash, full_name or username)
         )
-        return jsonify({'success': True, 'message': 'Admin registration submitted. Waiting for approval.'}), 201
+        logger.info(f"New admin registration: {username}")
+        return jsonify({'success': True, 'message': 'Admin registration submitted. Waiting for approval'}), 201
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Admin registration error: {str(e)}")
+        return jsonify({'error': 'Registration failed. Please try again.'}), 500
 
 @bp.route('/admin/pending', methods=['GET'])
 @admin_required
@@ -329,15 +326,16 @@ def get_session():
     
     try:
         token_parts = auth_header.split(" ")
-        if len(token_parts) != 2: return jsonify(None), 401
+        if len(token_parts) != 2:
+            return jsonify(None), 401
         token = token_parts[1]
         
-        payload = jwt.decode(token, Config.SECRET_KEY, algorithms=['HS256'])
+        payload = jwt.decode(token, Config.SECRET_KEY, algorithms=[Config.JWT_ALGORITHM])
         user_id = payload['sub']
         
         try:
-             u_res = db_manager.execute_query("SELECT * FROM users WHERE username=%s", (user_id,))
-             if u_res:
+            u_res = db_manager.execute_query("SELECT * FROM users WHERE username=%s", (user_id,))
+            if u_res:
                 u = u_res[0]
                 return jsonify({
                     'participant_id': u['user_id'],
@@ -347,11 +345,16 @@ def get_session():
                     'status': u.get('status', 'active'),
                     'admin_status': u.get('admin_status', 'APPROVED') 
                 })
-        except Exception as e: print(e)
+        except Exception as e:
+            logger.error(f"Session query error: {str(e)}")
              
         return jsonify(None), 404
+    except jwt.ExpiredSignatureError:
+        return jsonify({'error': 'Token has expired'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'error': 'Invalid token'}), 401
     except Exception as e:
-        print(f"Session Error: {e}")
+        logger.error(f"Session error: {str(e)}")
         return jsonify(None), 401
 @bp.route('/logout', methods=['POST'])
 def logout():

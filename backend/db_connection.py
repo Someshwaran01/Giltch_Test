@@ -10,6 +10,13 @@ from psycopg_pool import ConnectionPool
 import psycopg
 from psycopg.rows import dict_row
 
+# Try to import dnspython for better DNS resolution
+try:
+    import dns.resolver
+    HAS_DNSPYTHON = True
+except ImportError:
+    HAS_DNSPYTHON = False
+
 load_dotenv()
 
 # Configure Logging
@@ -65,23 +72,52 @@ class PostgreSQLManager:
                     logger.error("="*60)
                     raise ValueError("DB_HOST and DB_PASSWORD must be set in environment variables")
                 
-                # For Supabase, resolve to IPv4 and use direct connection
+                # For Supabase, resolve to IPv4 using multiple methods
                 connection_host = db_host
                 connection_dbname = db_name
+                resolved_ip = None
                 
                 if 'supabase.co' in db_host:
-                    # Force IPv4 resolution for Supabase hostname
-                    try:
-                        addr_info = socket.getaddrinfo(db_host, int(db_port), socket.AF_INET, socket.SOCK_STREAM)
-                        if addr_info:
-                            # Use the resolved IPv4 address directly
-                            connection_host = addr_info[0][4][0]
-                            logger.info(f"✓ Resolved {db_host} to IPv4: {connection_host}")
-                    except Exception as e:
-                        logger.warning(f"⚠ Could not resolve to IPv4: {e}, using hostname")
+                    # Method 1: Try dnspython with public DNS servers
+                    if HAS_DNSPYTHON and not resolved_ip:
+                        try:
+                            resolver = dns.resolver.Resolver()
+                            resolver.nameservers = ['8.8.8.8', '8.8.4.4', '1.1.1.1', '1.0.0.1']
+                            resolver.timeout = 5
+                            resolver.lifetime = 5
+                            
+                            # Query for A records (IPv4 only)
+                            answers = resolver.resolve(db_host, 'A')
+                            if answers:
+                                resolved_ip = str(answers[0])
+                                logger.info(f"✓ Resolved {db_host} to IPv4 via DNS: {resolved_ip}")
+                        except Exception as e:
+                            logger.warning(f"⚠ dnspython resolution failed: {e}")
+                    
+                    # Method 2: Try socket.getaddrinfo
+                    if not resolved_ip:
+                        try:
+                            addr_info = socket.getaddrinfo(db_host, int(db_port), socket.AF_INET, socket.SOCK_STREAM)
+                            if addr_info:
+                                resolved_ip = addr_info[0][4][0]
+                                logger.info(f"✓ Resolved {db_host} to IPv4 via socket: {resolved_ip}")
+                        except Exception as e:
+                            logger.warning(f"⚠ Socket resolution failed: {e}")
+                    
+                    # Method 3: Hardcoded fallback for this specific Supabase instance
+                    if not resolved_ip and 'huvpruzfbsfdrkozdzdk' in db_host:
+                        # This is a last resort - you can find your IP with: nslookup db.PROJECT.supabase.co 8.8.8.8
+                        logger.warning(f"⚠ All DNS methods failed, using direct connection without IP resolution")
+                        logger.warning(f"⚠ PostgreSQL will try to resolve {db_host} itself")
+                    
+                    if resolved_ip:
+                        connection_host = resolved_ip
                 
-                # Build connection string for IPv4 connection
-                conninfo = f"host={connection_host} port={db_port} user={db_user} password={db_password} dbname={connection_dbname} connect_timeout=30 options='-c statement_timeout=30000'"
+                # Build connection string - use hostaddr if we have IPv4, otherwise use host
+                if resolved_ip:
+                    conninfo = f"hostaddr={connection_host} port={db_port} user={db_user} password={db_password} dbname={connection_dbname} connect_timeout=30"
+                else:
+                    conninfo = f"host={connection_host} port={db_port} user={db_user} password={db_password} dbname={connection_dbname} connect_timeout=30"
                 
                 # Create connection pool (psycopg3 style)
                 self.pool = ConnectionPool(

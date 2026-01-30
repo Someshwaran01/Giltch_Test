@@ -1,12 +1,13 @@
 
-# db_connection.py (PostgreSQL for Supabase)
+# db_connection.py (PostgreSQL for Supabase using psycopg3)
 
 import logging
 import os
 import time
 from dotenv import load_dotenv
-from psycopg2 import pool, Error as PgError
-import psycopg2.extras
+from psycopg_pool import ConnectionPool
+import psycopg
+from psycopg.rows import dict_row
 
 load_dotenv()
 
@@ -43,28 +44,28 @@ class PostgreSQLManager:
                 db_user = os.getenv('DB_USER', 'postgres')
                 db_password = os.getenv('DB_PASSWORD')
                 db_name = os.getenv('DB_NAME', 'postgres')
-                pool_size = int(os.getenv('DB_POOL_SIZE', 30))
+                pool_min = 1
+                pool_max = int(os.getenv('DB_POOL_SIZE', 30))
                 
                 if not db_host or not db_password:
                     raise ValueError("DB_HOST and DB_PASSWORD must be set in environment variables")
                 
-                # Create connection pool
-                self.pool = psycopg2.pool.ThreadedConnectionPool(
-                    minconn=1,
-                    maxconn=pool_size,
-                    host=db_host,
-                    port=db_port,
-                    user=db_user,
-                    password=db_password,
-                    database=db_name,
-                    connect_timeout=int(os.getenv('DB_POOL_TIMEOUT', 30)),
-                    options='-c statement_timeout=30000'  # 30 second query timeout
+                # Build connection string
+                conninfo = f"host={db_host} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout={os.getenv('DB_POOL_TIMEOUT', 30)}"
+                
+                # Create connection pool (psycopg3 style)
+                self.pool = ConnectionPool(
+                    conninfo=conninfo,
+                    min_size=pool_min,
+                    max_size=pool_max,
+                    timeout=30,
+                    kwargs={"row_factory": dict_row}
                 )
                 
                 # Test connection
-                test_conn = self.pool.getconn()
-                test_conn.close()
-                self.pool.putconn(test_conn)
+                with self.pool.connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT 1")
                 
                 logger.info(f"PostgreSQL pool initialized successfully with database '{db_name}' on {db_host} (attempt {attempt + 1}/{max_retries})")
                 return  # Success
@@ -78,70 +79,29 @@ class PostgreSQLManager:
                     logger.error(f"Failed to initialize connection pool after {max_retries} attempts: {e}")
                     raise
 
-    def get_connection(self):
-        """Get a connection from the pool"""
-        try:
-            conn = self.pool.getconn()
-            return conn
-        except Exception as e:
-            logger.error(f"Failed to get connection from pool: {e}")
-            return None
-
-    def return_connection(self, conn):
-        """Return a connection to the pool"""
-        if conn:
-            try:
-                self.pool.putconn(conn)
-            except Exception as e:
-                logger.error(f"Failed to return connection to pool: {e}")
-
     def execute_query(self, query, params=None):
         """Execute a SELECT query and return results as list of dicts"""
-        conn = self.get_connection()
-        if not conn:
-            return None
-        
-        cursor = None
         try:
-            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            cursor.execute(query, params or ())
-            result = cursor.fetchall()
-            # Convert to list of regular dicts
-            return [dict(row) for row in result] if result else []
+            with self.pool.connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(query, params or ())
+                    result = cursor.fetchall()
+                    return result if result else []
         except Exception as e:
             logger.error(f"SELECT Query failed: {e}\nQuery: {query}")
             return None
-        finally:
-            if cursor:
-                try:
-                    cursor.close()
-                except:
-                    pass
-            self.return_connection(conn)
 
     def execute_update(self, query, params=None):
         """Execute an INSERT/UPDATE/DELETE query"""
-        conn = self.get_connection()
-        if not conn:
-            return False
-        
-        cursor = None
         try:
-            cursor = conn.cursor()
-            cursor.execute(query, params or ())
-            conn.commit()
-            return {"last_id": cursor.lastrowid if hasattr(cursor, 'lastrowid') else None, "affected": cursor.rowcount}
+            with self.pool.connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(query, params or ())
+                    conn.commit()
+                    return {"last_id": None, "affected": cursor.rowcount}
         except Exception as e:
-            conn.rollback()
             logger.error(f"UPDATE Query failed: {e}\nQuery: {query}")
             return False
-        finally:
-            if cursor:
-                try:
-                    cursor.close()
-                except:
-                    pass
-            self.return_connection(conn)
 
     def init_database(self, schema_file):
         """Initialize database from SQL file"""
@@ -190,3 +150,31 @@ except Exception as e:
     logger.error(f"Failed to initialize PostgreSQL manager: {e}")
     logger.error("Please ensure DB_HOST, DB_PASSWORD, and other Supabase credentials are set in environment variables")
     raise
+try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cursor:
+                    with open(schema_file, 'r', encoding='utf-8') as f:
+                        sql = f.read()
+                    
+                    # Execute SQL (PostgreSQL supports multiple statements)
+                    cursor.execute(sql)
+                    conn.commit()
+                    logger.info("Database initialized successfully.")
+                    return True
+        except Exception as e:
+            logger.error(f"Failed to initialize database: {e}")
+            return False
+    
+    def close_all(self):
+        """Close all connections in the pool"""
+        try:
+            if hasattr(self, 'pool') and self.pool:
+                self.pool.close()
+                logger.info("All database connections closed")
+        except Exception as e:
+            logger.error(f"Error closing connections: {e}")
+
+# Create global database manager instance
+try:
+    db_manager = PostgreSQLManager()
+    logger.info("Using PostgreSQL database manager (psycopg3)

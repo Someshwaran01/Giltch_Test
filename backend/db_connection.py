@@ -54,45 +54,34 @@ class PostgreSQLManager:
                 db_name = os.getenv('DB_NAME', 'postgres')
                 pool_min = 1
                 pool_max = int(os.getenv('DB_POOL_SIZE', 30))
-                
-                if not db_host or not db_password:
-                    logger.error("="*60)
-                    logger.error("MISSING DATABASE CREDENTIALS")
-                    logger.error("="*60)
-                    logger.error(f"  DB_HOST: {'✓ SET' if db_host else '✗ NOT SET'}")
-                    logger.error(f"  DB_PASSWORD: {'✓ SET' if db_password else '✗ NOT SET'}")
-                    logger.error("")
-                    logger.error("ACTION REQUIRED:")
-                    logger.error("  1. Go to Render Dashboard")
-                    logger.error("  2. Select your 'debug-marathon' service")
-                    logger.error("  3. Click 'Environment' tab")
-                    logger.error("  4. Add these variables:")
-                    logger.error(f"     DB_HOST=aws-0-us-east-1.pooler.supabase.com")
-                    logger.error(f"     DB_PASSWORD=<your-supabase-password>")
-                    logger.error("="*60)
-                    raise ValueError("DB_HOST and DB_PASSWORD must be set in environment variables")
-                
-                # For Supabase, resolve to IPv4 using multiple methods
                 connection_host = db_host
-                connection_dbname = db_name
                 resolved_ip = None
-                
+                # Supabase: Always resolve to IPv4 before connecting
                 if 'supabase.co' in db_host:
-                    # Method 1: Try dnspython with public DNS servers
                     if HAS_DNSPYTHON and not resolved_ip:
-                        try:
                             resolver = dns.resolver.Resolver()
                             resolver.nameservers = ['8.8.8.8', '8.8.4.4', '1.1.1.1', '1.0.0.1']
                             resolver.timeout = 5
                             resolver.lifetime = 5
-                            
-                            # Query for A records (IPv4 only)
                             answers = resolver.resolve(db_host, 'A')
-                            if answers:
-                                resolved_ip = str(answers[0])
+                            ipv4_list = [str(rdata) for rdata in answers if hasattr(rdata, 'address') and ':' not in str(rdata)]
+                            if ipv4_list:
+                                resolved_ip = ipv4_list[0]
                                 logger.info(f"✓ Resolved {db_host} to IPv4 via DNS: {resolved_ip}")
+                    if not resolved_ip:
+                        try:
+                            addr_info = socket.getaddrinfo(db_host, int(db_port), socket.AF_INET, socket.SOCK_STREAM)
+                            ipv4_addrs = [info[4][0] for info in addr_info if info[0] == socket.AF_INET]
+                            if ipv4_addrs:
+                                resolved_ip = ipv4_addrs[0]
+                                logger.info(f"✓ Resolved {db_host} to IPv4 via socket: {resolved_ip}")
                         except Exception as e:
-                            logger.warning(f"⚠ dnspython resolution failed: {e}")
+                            logger.warning(f"⚠ Socket resolution failed: {e}")
+                    if not resolved_ip and 'huvpruzfbsfdrkozdzdk' in db_host:
+                        logger.warning(f"⚠ All DNS methods failed, using direct connection without IP resolution")
+                        logger.warning(f"⚠ PostgreSQL will try to resolve {db_host} itself")
+                    if resolved_ip:
+                        connection_host = resolved_ip
                     
                     # Method 2: Try socket.getaddrinfo
                     if not resolved_ip:
@@ -114,11 +103,11 @@ class PostgreSQLManager:
                         connection_host = resolved_ip
                 
                 # Build connection string - use hostaddr if we have IPv4, otherwise use host
+                conninfo = None
                 if resolved_ip:
-                    conninfo = f"hostaddr={connection_host} port={db_port} user={db_user} password={db_password} dbname={connection_dbname} connect_timeout=30"
+                    conninfo = f"hostaddr={connection_host} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout=30"
                 else:
-                    conninfo = f"host={connection_host} port={db_port} user={db_user} password={db_password} dbname={connection_dbname} connect_timeout=30"
-                
+                    conninfo = f"host={connection_host} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout=30"
                 # Create connection pool (psycopg3 style)
                 self.pool = ConnectionPool(
                     conninfo=conninfo,
@@ -127,12 +116,10 @@ class PostgreSQLManager:
                     timeout=30,
                     kwargs={"row_factory": dict_row}
                 )
-                
                 # Test connection
                 with self.pool.connection() as conn:
                     with conn.cursor() as cur:
                         cur.execute("SELECT 1")
-                
                 logger.info(f"✓ PostgreSQL pool initialized successfully with database '{db_name}' on {connection_host}:{db_port} (attempt {attempt + 1}/{max_retries})")
                 return  # Success
                 

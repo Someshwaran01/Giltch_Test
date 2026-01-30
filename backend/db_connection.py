@@ -65,18 +65,23 @@ class PostgreSQLManager:
                     logger.error("="*60)
                     raise ValueError("DB_HOST and DB_PASSWORD must be set in environment variables")
                 
-                # For Supabase, use connection pooler with IPv4-only endpoint
-                # Format: aws-0-[region].pooler.supabase.com
+                # For Supabase, resolve to IPv4 and use direct connection
                 connection_host = db_host
-                if 'supabase.co' in db_host and 'pooler' not in db_host:
-                    # Convert direct connection to pooler connection
-                    # db.PROJECT.supabase.co -> aws-0-ap-south-1.pooler.supabase.com
-                    connection_host = 'aws-0-ap-south-1.pooler.supabase.com'
-                    db_port = '6543'  # Supabase pooler uses port 6543
-                    logger.info(f"✓ Using Supabase IPv4 pooler: {connection_host}:{db_port}")
+                connection_dbname = db_name
                 
-                # Build connection string for direct IPv4 connection
-                conninfo = f"host={connection_host} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout=30 options='-c statement_timeout=30000'"
+                if 'supabase.co' in db_host:
+                    # Force IPv4 resolution for Supabase hostname
+                    try:
+                        addr_info = socket.getaddrinfo(db_host, int(db_port), socket.AF_INET, socket.SOCK_STREAM)
+                        if addr_info:
+                            # Use the resolved IPv4 address directly
+                            connection_host = addr_info[0][4][0]
+                            logger.info(f"✓ Resolved {db_host} to IPv4: {connection_host}")
+                    except Exception as e:
+                        logger.warning(f"⚠ Could not resolve to IPv4: {e}, using hostname")
+                
+                # Build connection string for IPv4 connection
+                conninfo = f"host={connection_host} port={db_port} user={db_user} password={db_password} dbname={connection_dbname} connect_timeout=30 options='-c statement_timeout=30000'"
                 
                 # Create connection pool (psycopg3 style)
                 self.pool = ConnectionPool(

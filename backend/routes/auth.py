@@ -135,16 +135,24 @@ def leader_login():
 
         user = user_query[0]
         
-        # Verify Password
+        # Verify Password - Support SHA256 (64 hex chars) and Werkzeug hashes
         valid = False
-        if user['password_hash'].startswith('sha256'): # Legacy support if needed? No, user asked to REFAC.
-             # If strictly moving to werkzeug, we assume new hashes are used.
-             # But if checking legacy SHA256:
-             import hashlib
-             if user['password_hash'] == hashlib.sha256(password.encode()).hexdigest():
-                 valid = True
+        password_hash = user['password_hash']
+        
+        # Check if it's a SHA256 hash (64 characters, all hex)
+        if len(password_hash) == 64 and all(c in '0123456789abcdef' for c in password_hash.lower()):
+            import hashlib
+            if password_hash == hashlib.sha256(password.encode()).hexdigest():
+                valid = True
+        # Check if it's a scrypt hash (starts with scrypt:)
+        elif password_hash.startswith('scrypt:'):
+            valid = check_password_hash(password_hash, password)
+        # Otherwise try Werkzeug check (pbkdf2, etc.)
         else:
-             valid = check_password_hash(user['password_hash'], password)
+            try:
+                valid = check_password_hash(password_hash, password)
+            except:
+                pass
 
         if not valid:
              return jsonify({'error': 'Invalid credentials'}), 401
@@ -187,15 +195,24 @@ def admin_login():
             if status == 'REJECTED':
                 return jsonify({'error': '❌ Your admin request has been rejected.'}), 403
             
-            # Verify Password
-            # Support both legacy SHA256 (for initial admin) and new Werkzeug
+            # Verify Password - Support SHA256 (64 hex chars) and Werkzeug hashes
             valid = False
-            if len(user['password_hash']) == 64 and 'pbkdf2' not in user['password_hash']: # loose check for sha256 hex
+            password_hash = user['password_hash']
+            
+            # Check if it's a SHA256 hash (64 characters, all hex)
+            if len(password_hash) == 64 and all(c in '0123456789abcdef' for c in password_hash.lower()):
                 import hashlib
-                if user['password_hash'] == hashlib.sha256(password.encode()).hexdigest():
+                if password_hash == hashlib.sha256(password.encode()).hexdigest():
                     valid = True
+            # Check if it's a scrypt hash (starts with scrypt:)
+            elif password_hash.startswith('scrypt:'):
+                valid = check_password_hash(password_hash, password)
+            # Otherwise try Werkzeug check (pbkdf2, etc.)
             else:
-                valid = check_password_hash(user['password_hash'], password)
+                try:
+                    valid = check_password_hash(password_hash, password)
+                except:
+                    pass
 
             if valid:
                 return jsonify({
@@ -309,3 +326,44 @@ def get_session():
     except Exception as e:
         print(f"Session Error: {e}")
         return jsonify(None), 401
+@bp.route('/logout', methods=['POST'])
+def logout():
+    """
+    Universal logout endpoint for all user types.
+    Since JWT is stateless, logout is handled client-side by removing the token.
+    This endpoint can be used for logging/cleanup if needed.
+    """
+    auth_header = request.headers.get('Authorization')
+    
+    try:
+        if auth_header:
+            token = auth_header.split(" ")[1]
+            payload = jwt.decode(token, Config.SECRET_KEY, algorithms=['HS256'])
+            username = payload.get('sub')
+            role = payload.get('role')
+            
+            # Optional: Log the logout event
+            print(f"User {username} ({role}) logged out")
+            
+            # Optional: Clear any session data in database if needed
+            # For example, update last_logout timestamp
+            
+        return jsonify({'success': True, 'message': 'Logged out successfully'}), 200
+    except Exception as e:
+        # Even if token is invalid, consider logout successful
+        return jsonify({'success': True, 'message': 'Logged out'}), 200
+
+@bp.route('/participant/logout', methods=['POST'])
+def participant_logout():
+    """Participant-specific logout endpoint"""
+    return logout()
+
+@bp.route('/leader/logout', methods=['POST'])
+def leader_logout():
+    """Leader-specific logout endpoint"""
+    return logout()
+
+@bp.route('/admin/logout', methods=['POST'])
+def admin_logout():
+    """Admin-specific logout endpoint"""
+    return logout()

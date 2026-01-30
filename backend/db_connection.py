@@ -109,48 +109,7 @@ class PostgreSQLManager:
             logger.error(f"Schema file not found: {schema_file}")
             return False
         
-        conn = self.get_connection()
-        if not conn:
-            return False
-        
-        cursor = None
         try:
-            cursor = conn.cursor()
-            with open(schema_file, 'r', encoding='utf-8') as f:
-                sql = f.read()
-            
-            # Execute SQL (PostgreSQL supports multiple statements)
-            cursor.execute(sql)
-            conn.commit()
-            logger.info("Database initialized successfully.")
-            return True
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"Failed to initialize database: {e}")
-            return False
-        finally:
-            if cursor:
-                cursor.close()
-            self.return_connection(conn)
-    
-    def close_all(self):
-        """Close all connections in the pool"""
-        try:
-            if hasattr(self, 'pool') and self.pool:
-                self.pool.closeall()
-                logger.info("All database connections closed")
-        except Exception as e:
-            logger.error(f"Error closing connections: {e}")
-
-# Create global database manager instance
-try:
-    db_manager = PostgreSQLManager()
-    logger.info("Using PostgreSQL database manager for Supabase")
-except Exception as e:
-    logger.error(f"Failed to initialize PostgreSQL manager: {e}")
-    logger.error("Please ensure DB_HOST, DB_PASSWORD, and other Supabase credentials are set in environment variables")
-    raise
-try:
             with self.pool.connection() as conn:
                 with conn.cursor() as cursor:
                     with open(schema_file, 'r', encoding='utf-8') as f:
@@ -177,4 +136,8 @@ try:
 # Create global database manager instance
 try:
     db_manager = PostgreSQLManager()
-    logger.info("Using PostgreSQL database manager (psycopg3)
+    logger.info("Using PostgreSQL database manager (psycopg3)")
+except Exception as e:
+    logger.error(f"Failed to initialize PostgreSQL manager: {e}")
+    logger.error("Please ensure DB_HOST, DB_PASSWORD, and other Supabase credentials are set in environment variables")
+    raise

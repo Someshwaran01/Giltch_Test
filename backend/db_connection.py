@@ -4,6 +4,7 @@
 import logging
 import os
 import time
+import socket
 from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
 import psycopg
@@ -50,8 +51,19 @@ class PostgreSQLManager:
                 if not db_host or not db_password:
                     raise ValueError("DB_HOST and DB_PASSWORD must be set in environment variables")
                 
-                # Build connection string
-                conninfo = f"host={db_host} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout={os.getenv('DB_POOL_TIMEOUT', 30)}"
+                # Resolve hostname to IPv4 to avoid IPv6 connectivity issues
+                resolved_host = db_host
+                try:
+                    # Get IPv4 address only
+                    addr_info = socket.getaddrinfo(db_host, db_port, socket.AF_INET, socket.SOCK_STREAM)
+                    if addr_info:
+                        resolved_host = addr_info[0][4][0]  # Get first IPv4 address
+                        logger.info(f"Resolved {db_host} to IPv4: {resolved_host}")
+                except Exception as resolve_error:
+                    logger.warning(f"Could not resolve hostname to IPv4: {resolve_error}, using hostname as-is")
+                
+                # Build connection string with resolved IPv4 address
+                conninfo = f"host={resolved_host} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout={os.getenv('DB_POOL_TIMEOUT', 30)}"
                 
                 # Create connection pool (psycopg3 style)
                 self.pool = ConnectionPool(
@@ -67,7 +79,7 @@ class PostgreSQLManager:
                     with conn.cursor() as cur:
                         cur.execute("SELECT 1")
                 
-                logger.info(f"PostgreSQL pool initialized successfully with database '{db_name}' on {db_host} (attempt {attempt + 1}/{max_retries})")
+                logger.info(f"PostgreSQL pool initialized successfully with database '{db_name}' on {resolved_host} (attempt {attempt + 1}/{max_retries})")
                 return  # Success
                 
             except Exception as e:

@@ -1,6 +1,7 @@
 services:
   - type: web
     name: debug-marathon
+    runtime: python
     env: python
     region: oregon
     plan: free
@@ -8,11 +9,9 @@ services:
     startCommand: gunicorn -w 1 --threads 100 --timeout 120 --chdir backend app:app --bind 0.0.0.0:$PORT
     healthCheckPath: /health
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.0
       - key: SECRET_KEY
         generateValue: true
       - key: FLASK_ENV
         value: production
       - key: FLASK_DEBUG
-        value: false
+        value: "false"

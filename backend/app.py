@@ -16,13 +16,14 @@ def create_app(config_class=Config):
     from routes.admin import bp as admin_bp
     from routes.leaderboard import bp as leaderboard_bp
     from routes.proctoring import bp as proctoring_bp
+    from routes.test import bp as test_bp
 
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(contest_bp, url_prefix='/api/contest')
     app.register_blueprint(admin_bp, url_prefix='/api/admin')
     app.register_blueprint(leaderboard_bp, url_prefix='/api/leaderboard')
-
     app.register_blueprint(proctoring_bp, url_prefix='/api/proctoring')
+    app.register_blueprint(test_bp, url_prefix='/api/test')
     
     from routes.leader import bp as leader_bp
     app.register_blueprint(leader_bp, url_prefix='/api/leader')

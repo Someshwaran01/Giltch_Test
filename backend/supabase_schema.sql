@@ -340,10 +340,12 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
--- Apply triggers
+-- Apply triggers (drop first if exists)
+DROP TRIGGER IF EXISTS update_contests_updated_at ON contests;
 CREATE TRIGGER update_contests_updated_at BEFORE UPDATE ON contests
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_proctoring_config_updated_at ON proctoring_config;
 CREATE TRIGGER update_proctoring_config_updated_at BEFORE UPDATE ON proctoring_config
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
@@ -362,4 +364,4 @@ $$ LANGUAGE plpgsql;
 -- Complete!
 -- --------------------------------------------------------
 
-COMMENT ON DATABASE CURRENT_DATABASE() IS 'Debug Marathon Platform - PostgreSQL/Supabase Schema v4.0';
+-- Schema setup complete for Debug Marathon Platform - PostgreSQL/Supabase v4.0

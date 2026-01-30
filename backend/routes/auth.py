@@ -179,20 +179,30 @@ def admin_login():
     username = data.get('username')
     password = data.get('password')
 
+    print(f"[DEBUG] Admin login attempt - Username: {username}, Password length: {len(password) if password else 0}")
+
     if not username or not password:
         return jsonify({'error': 'Username and Password are required'}), 400
 
     try:
         user_query = db_manager.execute_query("SELECT * FROM users WHERE username=%s AND role='admin'", (username,))
+        
+        print(f"[DEBUG] Query result: {len(user_query) if user_query else 0} users found")
             
         if user_query:
             user = user_query[0]
             
+            print(f"[DEBUG] User found - ID: {user.get('user_id')}, Status: {user.get('admin_status')}")
+            print(f"[DEBUG] Password hash length: {len(user['password_hash'])}")
+            print(f"[DEBUG] Password hash (first 20): {user['password_hash'][:20]}...")
+            
             # Status Check
             status = user.get('admin_status', 'PENDING')
             if status == 'PENDING':
+                print(f"[DEBUG] Status check failed: PENDING")
                 return jsonify({'error': '⏳ Your admin request is pending approval.'}), 403
             if status == 'REJECTED':
+                print(f"[DEBUG] Status check failed: REJECTED")
                 return jsonify({'error': '❌ Your admin request has been rejected.'}), 403
             
             # Verify Password - Support SHA256 (64 hex chars) and Werkzeug hashes
@@ -201,20 +211,32 @@ def admin_login():
             
             # Check if it's a SHA256 hash (64 characters, all hex)
             if len(password_hash) == 64 and all(c in '0123456789abcdef' for c in password_hash.lower()):
+                print(f"[DEBUG] Detected as SHA256 hash")
                 import hashlib
-                if password_hash == hashlib.sha256(password.encode()).hexdigest():
+                input_hash = hashlib.sha256(password.encode()).hexdigest()
+                print(f"[DEBUG] Input hash: {input_hash[:20]}...")
+                if password_hash == input_hash:
                     valid = True
+                    print(f"[DEBUG] SHA256 verification: PASSED")
+                else:
+                    print(f"[DEBUG] SHA256 verification: FAILED")
             # Check if it's a scrypt hash (starts with scrypt:)
             elif password_hash.startswith('scrypt:'):
+                print(f"[DEBUG] Detected as Scrypt hash")
                 valid = check_password_hash(password_hash, password)
+                print(f"[DEBUG] Scrypt verification: {'PASSED' if valid else 'FAILED'}")
             # Otherwise try Werkzeug check (pbkdf2, etc.)
             else:
+                print(f"[DEBUG] Trying Werkzeug verification")
                 try:
                     valid = check_password_hash(password_hash, password)
-                except:
+                    print(f"[DEBUG] Werkzeug verification: {'PASSED' if valid else 'FAILED'}")
+                except Exception as e:
+                    print(f"[DEBUG] Werkzeug verification error: {e}")
                     pass
 
             if valid:
+                print(f"[DEBUG] Login successful for {username}")
                 return jsonify({
                     'success': True,
                     'token': create_token(user['username'], 'admin'),
@@ -224,10 +246,15 @@ def admin_login():
                     }
                 })
             else:
+                print(f"[DEBUG] Login failed - Invalid password")
                 return jsonify({'error': 'Invalid credentials'}), 401
         else:
+            print(f"[DEBUG] No user found with username: {username}")
             return jsonify({'error': 'Invalid credentials'}), 401
     except Exception as e:
+        print(f"[ERROR] Admin login exception: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @bp.route('/admin/register', methods=['POST'])

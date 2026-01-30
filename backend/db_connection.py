@@ -49,21 +49,41 @@ class PostgreSQLManager:
                 pool_max = int(os.getenv('DB_POOL_SIZE', 30))
                 
                 if not db_host or not db_password:
+                    logger.error("="*60)
+                    logger.error("MISSING DATABASE CREDENTIALS")
+                    logger.error("="*60)
+                    logger.error(f"  DB_HOST: {'✓ SET' if db_host else '✗ NOT SET'}")
+                    logger.error(f"  DB_PASSWORD: {'✓ SET' if db_password else '✗ NOT SET'}")
+                    logger.error("")
+                    logger.error("ACTION REQUIRED:")
+                    logger.error("  1. Go to Render Dashboard")
+                    logger.error("  2. Select your 'debug-marathon' service")
+                    logger.error("  3. Click 'Environment' tab")
+                    logger.error("  4. Add these variables:")
+                    logger.error(f"     DB_HOST=db.huvpruzfbsfdrkozdzdk.supabase.co")
+                    logger.error(f"     DB_PASSWORD=<your-supabase-password>")
+                    logger.error("="*60)
                     raise ValueError("DB_HOST and DB_PASSWORD must be set in environment variables")
                 
-                # Resolve hostname to IPv4 to avoid IPv6 connectivity issues
-                resolved_host = db_host
+                # Try to resolve hostname to IPv4
+                resolved_ip = None
                 try:
-                    # Get IPv4 address only
-                    addr_info = socket.getaddrinfo(db_host, db_port, socket.AF_INET, socket.SOCK_STREAM)
+                    # Force IPv4 resolution using socket
+                    addr_info = socket.getaddrinfo(db_host, int(db_port), socket.AF_INET, socket.SOCK_STREAM)
                     if addr_info:
-                        resolved_host = addr_info[0][4][0]  # Get first IPv4 address
-                        logger.info(f"Resolved {db_host} to IPv4: {resolved_host}")
-                except Exception as resolve_error:
-                    logger.warning(f"Could not resolve hostname to IPv4: {resolve_error}, using hostname as-is")
+                        resolved_ip = addr_info[0][4][0]
+                        logger.info(f"✓ Resolved {db_host} to IPv4: {resolved_ip}")
+                except socket.gaierror as e:
+                    logger.warning(f"⚠ DNS resolution failed: {e}")
+                    logger.warning(f"Will attempt direct connection to {db_host}")
                 
-                # Build connection string with resolved IPv4 address
-                conninfo = f"host={resolved_host} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout={os.getenv('DB_POOL_TIMEOUT', 30)}"
+                # Build connection string - use hostaddr if we have IPv4, otherwise use host
+                if resolved_ip:
+                    # hostaddr forces specific IP, avoids IPv6
+                    conninfo = f"hostaddr={resolved_ip} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout={os.getenv('DB_POOL_TIMEOUT', 30)}"
+                else:
+                    # Fallback to hostname
+                    conninfo = f"host={db_host} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout={os.getenv('DB_POOL_TIMEOUT', 30)}"
                 
                 # Create connection pool (psycopg3 style)
                 self.pool = ConnectionPool(
@@ -79,7 +99,8 @@ class PostgreSQLManager:
                     with conn.cursor() as cur:
                         cur.execute("SELECT 1")
                 
-                logger.info(f"PostgreSQL pool initialized successfully with database '{db_name}' on {resolved_host} (attempt {attempt + 1}/{max_retries})")
+                connection_target = resolved_ip if resolved_ip else db_host
+                logger.info(f"✓ PostgreSQL pool initialized successfully with database '{db_name}' on {connection_target} (attempt {attempt + 1}/{max_retries})")
                 return  # Success
                 
             except Exception as e:

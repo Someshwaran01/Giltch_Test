@@ -69,7 +69,7 @@ class PostgreSQLManager:
                 resolved_ip = None
                 
                 # Supabase: Try to resolve to IPv4 before connecting (with fallback)
-                if db_host and 'supabase.co' in db_host:
+                if db_host and 'supabase.com' in db_host:
                     # Method 1: Try dnspython with multiple DNS servers
                     if HAS_DNSPYTHON and not resolved_ip:
                         try:
@@ -104,18 +104,23 @@ class PostgreSQLManager:
                         except Exception as e:
                             logger.warning(f"⚠ gethostbyname resolution failed: {e}")
                     
-                    # If still no resolution, this is a critical error for Supabase
-                    if not resolved_ip:
-                        logger.error(f"❌ CRITICAL: Cannot resolve {db_host} to IPv4 address")
-                        logger.error(f"❌ Render requires IPv4. Supabase resolved to IPv6 which is not supported.")
-                        raise Exception(f"Cannot resolve {db_host} to IPv4 address. Check your DB_HOST setting.")
-                    else:
+                    # Update connection host if resolved
+                    if resolved_ip:
                         connection_host = resolved_ip
+                        logger.info(f"Using resolved IPv4 address: {resolved_ip}")
+                    else:
+                        logger.warning(f"⚠ Could not resolve {db_host} to IPv4, will try direct connection")
+                        logger.warning(f"⚠ If connection fails, check your DB_HOST setting")
+                        # Don't raise exception here - let psycopg try to connect
                 
                 # Build connection string with SSL for Supabase
-                # CRITICAL: Use hostaddr (not host) to force IPv4 and prevent IPv6 resolution
-                conninfo = f"hostaddr={connection_host} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout=30 sslmode=require"
-                logger.info(f"Connecting to PostgreSQL at {connection_host}:{db_port} (resolved from {db_host})")
+                # Use hostaddr if we resolved to IPv4, otherwise use host
+                if resolved_ip:
+                    conninfo = f"hostaddr={connection_host} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout=30 sslmode=require"
+                    logger.info(f"Connecting to PostgreSQL at {connection_host}:{db_port} (resolved from {db_host})")
+                else:
+                    conninfo = f"host={connection_host} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout=30 sslmode=require"
+                    logger.info(f"Connecting to PostgreSQL at {connection_host}:{db_port} (direct connection)")
                 # Create connection pool (psycopg3 style)
                 self.pool = ConnectionPool(
                     conninfo=conninfo,

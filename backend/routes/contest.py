@@ -526,7 +526,7 @@ def submit_question():
     question = q_res[0]
     
     # 2. Check for Duplicate Submission (Success Only)
-    check_query = "SELECT is_correct FROM submissions WHERE user_id=%s AND question_id=%s AND is_correct=1"
+    check_query = "SELECT is_correct FROM submissions WHERE user_id=%s AND question_id=%s AND is_correct=TRUE"
     check_res = db_manager.execute_query(check_query, (uid, question['question_id']))
     if check_res:
          return jsonify({'error': 'Already submitted successfully', 'submitted': True}), 400
@@ -633,7 +633,7 @@ def submit_question():
         recalc_query = """
             UPDATE participant_level_stats ps
             SET 
-                questions_solved = (SELECT COUNT(*) FROM submissions s WHERE s.user_id=ps.user_id AND s.is_correct=1),
+                questions_solved = (SELECT COUNT(*) FROM submissions s WHERE s.user_id=ps.user_id AND s.is_correct=TRUE),
                 level_score = (SELECT SUM(score_awarded) FROM submissions s WHERE s.user_id=ps.user_id)
             WHERE ps.user_id=%s AND ps.contest_id=%s AND ps.level=%s
         """
@@ -807,7 +807,7 @@ def get_participant_state():
              except: pass
 
         # 4. Solved Question IDs
-        s_query = "SELECT question_id FROM submissions WHERE user_id=%s AND contest_id=%s AND is_correct=1"
+        s_query = "SELECT question_id FROM submissions WHERE user_id=%s AND contest_id=%s AND is_correct=TRUE"
         s_res = db_manager.execute_query(s_query, (uid, contest_id))
         solved_ids = [str(r['question_id']) for r in s_res] if s_res else []
 
@@ -1127,7 +1127,7 @@ def get_contest_stats(contest_id):
     viols = v_res[0]['count'] if v_res else 0
     
     # 4. Solved (Total passed submissions)
-    s_query = "SELECT COUNT(*) as count FROM submissions WHERE contest_id=%s AND is_correct=1"
+    s_query = "SELECT COUNT(*) as count FROM submissions WHERE contest_id=%s AND is_correct=TRUE"
     s_res = db_manager.execute_query(s_query, (contest_id,))
     solved = s_res[0]['count'] if s_res else 0
     

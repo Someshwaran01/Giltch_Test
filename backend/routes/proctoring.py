@@ -347,11 +347,11 @@ def get_stats(contest_id):
         if res1 and res1[0]['val']: stats['total_violations'] = float(res1[0]['val']) # Safe cast
         
         # Active Risky: Count of participants with risk high/critical who are NOT disqualified
-        res2 = db.execute_query("SELECT COUNT(*) as val FROM participant_proctoring WHERE contest_id=%s AND risk_level IN ('high', 'critical') AND is_disqualified=0", (contest_id,))
+        res2 = db.execute_query("SELECT COUNT(*) as val FROM participant_proctoring WHERE contest_id=%s AND risk_level IN ('high', 'critical') AND is_disqualified=FALSE", (contest_id,))
         if res2: stats['active_risky_participants'] = int(res2[0]['val'])
         
         # Disqualified
-        res3 = db.execute_query("SELECT COUNT(*) as val FROM participant_proctoring WHERE contest_id=%s AND is_disqualified=1", (contest_id,))
+        res3 = db.execute_query("SELECT COUNT(*) as val FROM participant_proctoring WHERE contest_id=%s AND is_disqualified=TRUE", (contest_id,))
         if res3: stats['auto_disqualifications'] = int(res3[0]['val'])
         
         return jsonify({'success': True, 'stats': stats})

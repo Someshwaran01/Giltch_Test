@@ -284,3 +284,45 @@ def create_leader():
 def delete_leader(lid):
     db_manager.execute_update("DELETE FROM users WHERE username=%s AND role='leader'", (lid,))
     return jsonify({'success': True})
+
+# === Quick Database Seeding (Temporary endpoint for testing) ===
+
+@bp.route('/seed-test-data', methods=['POST'])
+def seed_test_data():
+    """
+    Temporary endpoint to quickly seed test data for login testing.
+    WARNING: Remove this endpoint in production!
+    """
+    try:
+        created = []
+        
+        # Create test participants
+        test_users = [
+            ('TEST001', 'test001@example.com', 'Test User 001', 'participant'),
+            ('TEST002', 'test002@example.com', 'Test User 002', 'participant'),
+            ('ADMIN001', 'admin@example.com', 'Admin User', 'admin'),
+        ]
+        
+        for username, email, full_name, role in test_users:
+            query = """
+                INSERT INTO users (username, email, password_hash, full_name, role, status, college, department)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (username) DO NOTHING
+                RETURNING user_id
+            """
+            result = db_manager.execute_query(
+                query,
+                (username, email, 'dummy_hash', full_name, role, 'active', 'Test College', 'CSE')
+            )
+            if result:
+                created.append({'username': username, 'role': role})
+        
+        return jsonify({
+            'success': True,
+            'message': f'Created {len(created)} test users',
+            'users': created,
+            'login_instructions': 'You can now login with usernames: TEST001, TEST002, or ADMIN001'
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e), 'details': 'Failed to seed test data'}), 500

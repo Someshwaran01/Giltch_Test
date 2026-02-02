@@ -25,6 +25,11 @@ def create_token(user_id, role='participant'):
 
 @bp.route('/participant/login', methods=['POST'])
 def participant_login():
+    # Check if database is connected
+    if db_manager is None:
+        logger.error("Database not connected - cannot process login")
+        return jsonify({'error': 'Database connection unavailable. Please contact administrator.'}), 503
+    
     data = request.get_json()
     pid = data.get('participant_id', '').strip()
     

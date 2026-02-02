@@ -206,10 +206,15 @@ class PostgreSQLManager:
             logger.error(f"Error closing connections: {e}")
 
 # Create global database manager instance
+db_manager = None
 try:
     db_manager = PostgreSQLManager()
-    logger.info("Using PostgreSQL database manager (psycopg3)")
+    logger.info("✅ Using PostgreSQL database manager (psycopg3)")
+    logger.info("✅ Database connection established successfully")
 except Exception as e:
-    logger.error(f"Failed to initialize PostgreSQL manager: {e}")
-    logger.error("Please ensure DB_HOST, DB_PASSWORD, and other Supabase credentials are set in environment variables")
-    raise
+    logger.error(f"❌ Failed to initialize PostgreSQL manager: {e}")
+    logger.error("❌ Please ensure DB_HOST, DB_PASSWORD, and other Supabase credentials are set in environment variables")
+    logger.error("⚠️  App will start but database operations will fail until connection is established")
+    logger.error("⚠️  Fix the database connection and restart the service")
+    # Don't raise - allow app to start so we can see error messages
+    # In production, you might want to raise here for fail-fast behavior

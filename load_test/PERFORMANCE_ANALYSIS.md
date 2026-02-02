@@ -150,7 +150,7 @@ CREATE INDEX idx_questions_contest ON questions(contest_id);
 - **Recommended:** Upgrade to **Starter** ($7/month) or **Standard** ($25/month)
   - No cold starts
   - More CPU/memory
-  - Better for 350 concurrent users
+  - Better for 350 concurrent users]
 
 ---
 

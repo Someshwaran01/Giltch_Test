@@ -34,6 +34,7 @@ CREATE TABLE users (
   role VARCHAR(20) NOT NULL DEFAULT 'participant',
   department VARCHAR(100),
   college VARCHAR(100),
+  phone VARCHAR(20),
   status VARCHAR(20) DEFAULT 'active',
   is_active BOOLEAN DEFAULT TRUE,
   admin_status VARCHAR(20) DEFAULT 'PENDING',

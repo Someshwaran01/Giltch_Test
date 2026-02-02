@@ -95,7 +95,7 @@ def create_participant():
         'full_name': full_name,
         'college': data.get('college'),
         'department': data.get('department'),
-        'phone': data.get('phone'),
+        'phone': data.get('phone', ''),
         'role': 'participant',
         'status': 'active'
     }
@@ -109,8 +109,8 @@ def create_participant():
             else:
                 return jsonify({'error': f"Participant ID '{username}' already exists."}), 409
 
-        cols = ['username', 'email', 'password_hash', 'full_name', 'role', 'status', 'college', 'department']
-        vals = [new_user[c] for c in cols]
+        cols = ['username', 'email', 'password_hash', 'full_name', 'role', 'status', 'college', 'department', 'phone']
+        vals = [new_user.get(c, '') if c == 'phone' else new_user[c] for c in cols]
         placeholders = ', '.join(['%s'] * len(cols))
         col_str = ', '.join(cols)
         

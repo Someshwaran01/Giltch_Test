@@ -109,7 +109,7 @@ ssh -i ~/.ssh/LightsailDefaultKey-ap-south-1.pem ubuntu@<your-static-ip>
 ### **Install Dependencies**
 
 ```bash
-# Update system
+]# Update system
 sudo apt update && sudo apt upgrade -y
 
 # Install Python 3.11

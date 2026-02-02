@@ -54,13 +54,25 @@ class PostgreSQLManager:
                 db_user = os.getenv('DB_USER', 'postgres')
                 db_password = os.getenv('DB_PASSWORD')
                 db_name = os.getenv('DB_NAME', 'postgres')
+                
+                # Validate critical environment variables
+                if not db_host:
+                    raise ValueError("DB_HOST environment variable is not set. Please configure it in your deployment environment.")
+                if not db_password:
+                    raise ValueError("DB_PASSWORD environment variable is not set. Please configure it in your deployment environment.")
+                
+                logger.info(f"Attempting to connect to database: {db_host}:{db_port}/{db_name} as user {db_user}")
+                
                 pool_min = 1
                 pool_max = int(os.getenv('DB_POOL_SIZE', 30))
                 connection_host = db_host
                 resolved_ip = None
-                # Supabase: Always resolve to IPv4 before connecting
-                if 'supabase.co' in db_host:
+                
+                # Supabase: Try to resolve to IPv4 before connecting (with fallback)
+                if db_host and 'supabase.co' in db_host:
+                    # Method 1: Try dnspython with multiple DNS servers
                     if HAS_DNSPYTHON and not resolved_ip:
+                        try:
                             resolver = dns.resolver.Resolver()
                             resolver.nameservers = ['8.8.8.8', '8.8.4.4', '1.1.1.1', '1.0.0.1']
                             resolver.timeout = 5
@@ -70,6 +82,10 @@ class PostgreSQLManager:
                             if ipv4_list:
                                 resolved_ip = ipv4_list[0]
                                 logger.info(f"✓ Resolved {db_host} to IPv4 via DNS: {resolved_ip}")
+                        except Exception as e:
+                            logger.warning(f"⚠ DNS resolution via dnspython failed: {e}")
+                    
+                    # Method 2: Try socket.getaddrinfo
                     if not resolved_ip:
                         try:
                             addr_info = socket.getaddrinfo(db_host, int(db_port), socket.AF_INET, socket.SOCK_STREAM)
@@ -79,29 +95,12 @@ class PostgreSQLManager:
                                 logger.info(f"✓ Resolved {db_host} to IPv4 via socket: {resolved_ip}")
                         except Exception as e:
                             logger.warning(f"⚠ Socket resolution failed: {e}")
-                    if not resolved_ip and 'huvpruzfbsfdrkozdzdk' in db_host:
-                        logger.warning(f"⚠ All DNS methods failed, using direct connection without IP resolution")
-                        logger.warning(f"⚠ PostgreSQL will try to resolve {db_host} itself")
-                    if resolved_ip:
-                        connection_host = resolved_ip
                     
-                    # Method 2: Try socket.getaddrinfo
+                    # Fallback: Let PostgreSQL handle DNS resolution
                     if not resolved_ip:
-                        try:
-                            addr_info = socket.getaddrinfo(db_host, int(db_port), socket.AF_INET, socket.SOCK_STREAM)
-                            if addr_info:
-                                resolved_ip = addr_info[0][4][0]
-                                logger.info(f"✓ Resolved {db_host} to IPv4 via socket: {resolved_ip}")
-                        except Exception as e:
-                            logger.warning(f"⚠ Socket resolution failed: {e}")
-                    
-                    # Method 3: Hardcoded fallback for this specific Supabase instance
-                    if not resolved_ip and 'huvpruzfbsfdrkozdzdk' in db_host:
-                        # This is a last resort - you can find your IP with: nslookup db.PROJECT.supabase.co 8.8.8.8
-                        logger.warning(f"⚠ All DNS methods failed, using direct connection without IP resolution")
-                        logger.warning(f"⚠ PostgreSQL will try to resolve {db_host} itself")
-                    
-                    if resolved_ip:
+                        logger.warning(f"⚠ All DNS resolution methods failed")
+                        logger.warning(f"⚠ Using direct host connection - PostgreSQL will resolve {db_host}")
+                    else:
                         connection_host = resolved_ip
                 
                 # Build connection string - use hostaddr if we have IPv4, otherwise use host

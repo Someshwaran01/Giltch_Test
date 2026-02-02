@@ -18,6 +18,8 @@ except ImportError:
     HAS_DNSPYTHON = False
 
 load_dotenv()
+# For production, only environment variables are used for DB config.
+# db_config.ini is ignored for PostgreSQL/Supabase deployments.
 
 # Configure Logging
 logging.basicConfig(

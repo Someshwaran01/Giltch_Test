@@ -85,7 +85,7 @@ class PostgreSQLManager:
                         except Exception as e:
                             logger.warning(f"⚠ DNS resolution via dnspython failed: {e}")
                     
-                    # Method 2: Try socket.getaddrinfo
+                    # Method 2: Try socket.getaddrinfo with IPv4 only
                     if not resolved_ip:
                         try:
                             addr_info = socket.getaddrinfo(db_host, int(db_port), socket.AF_INET, socket.SOCK_STREAM)
@@ -96,19 +96,26 @@ class PostgreSQLManager:
                         except Exception as e:
                             logger.warning(f"⚠ Socket resolution failed: {e}")
                     
-                    # Fallback: Let PostgreSQL handle DNS resolution
+                    # Method 3: Try standard socket gethostbyname (IPv4 only)
                     if not resolved_ip:
-                        logger.warning(f"⚠ All DNS resolution methods failed")
-                        logger.warning(f"⚠ Using direct host connection - PostgreSQL will resolve {db_host}")
+                        try:
+                            resolved_ip = socket.gethostbyname(db_host)
+                            logger.info(f"✓ Resolved {db_host} to IPv4 via gethostbyname: {resolved_ip}")
+                        except Exception as e:
+                            logger.warning(f"⚠ gethostbyname resolution failed: {e}")
+                    
+                    # If still no resolution, this is a critical error for Supabase
+                    if not resolved_ip:
+                        logger.error(f"❌ CRITICAL: Cannot resolve {db_host} to IPv4 address")
+                        logger.error(f"❌ Render requires IPv4. Supabase resolved to IPv6 which is not supported.")
+                        raise Exception(f"Cannot resolve {db_host} to IPv4 address. Check your DB_HOST setting.")
                     else:
                         connection_host = resolved_ip
                 
-                # Build connection string - use hostaddr if we have IPv4, otherwise use host
-                conninfo = None
-                if resolved_ip:
-                    conninfo = f"hostaddr={connection_host} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout=30"
-                else:
-                    conninfo = f"host={connection_host} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout=30"
+                # Build connection string with SSL for Supabase
+                # CRITICAL: Use hostaddr (not host) to force IPv4 and prevent IPv6 resolution
+                conninfo = f"hostaddr={connection_host} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout=30 sslmode=require"
+                logger.info(f"Connecting to PostgreSQL at {connection_host}:{db_port} (resolved from {db_host})")
                 # Create connection pool (psycopg3 style)
                 self.pool = ConnectionPool(
                     conninfo=conninfo,

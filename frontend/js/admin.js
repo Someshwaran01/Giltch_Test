@@ -1377,27 +1377,35 @@ const Admin = {
                 const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
                 const jsonData = XLSX.utils.sheet_to_json(firstSheet);
 
+                console.log('Excel data loaded:', jsonData.length, 'rows');
+                console.log('First row columns:', jsonData[0] ? Object.keys(jsonData[0]) : 'No data');
+
                 if (jsonData.length === 0) {
-                    alert("Excel file is empty or invalid.");
+                    alert("Excel file is empty or has no data rows.\n\nMake sure:\n- File has headers in first row\n- Data starts from second row");
                     return;
                 }
 
                 let successCount = 0;
                 let failCount = 0;
+                let skippedCount = 0;
 
                 const btn = document.querySelector('.admin-header .btn-secondary');
                 const originalText = btn.innerHTML;
                 btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Processing...';
                 btn.disabled = true;
 
-                for (const row of jsonData) {
+                for (let i = 0; i < jsonData.length; i++) {
+                    const row = jsonData[i];
+
                     // Try to map various column name possibilities
-                    const pid = row['Participant ID'] || row['ID'] || row['id'] || row['User ID'];
-                    const name = row['Full Name'] || row['Name'] || row['Student Name'];
-                    const college = row['College'] || row['Institution'] || row['College Name'];
-                    const dept = row['Department'] || row['Dept'] || row['Branch'];
-                    const phone = row['Phone'] || row['Mobile'] || row['Contact'];
-                    const email = row['Email'] || row['Email Address'] || row['Mail'];
+                    const pid = row['Participant ID'] || row['ID'] || row['id'] || row['User ID'] || row['participant_id'] || row['ParticipantID'];
+                    const name = row['Full Name'] || row['Name'] || row['Student Name'] || row['name'] || row['full_name'] || row['FullName'];
+                    const college = row['College'] || row['Institution'] || row['College Name'] || row['college'];
+                    const dept = row['Department'] || row['Dept'] || row['Branch'] || row['department'];
+                    const phone = row['Phone'] || row['Mobile'] || row['Contact'] || row['phone'];
+                    const email = row['Email'] || row['Email Address'] || row['Mail'] || row['email'];
+
+                    console.log(`Row ${i + 1}:`, { pid, name, college, dept, phone, email });
 
                     if (pid && name) {
                         try {
@@ -1409,26 +1417,38 @@ const Admin = {
                                 phone: phone ? String(phone).trim() : '',
                                 email: email ? String(email).trim() : ''
                             });
-                            if (res && res.success) successCount++;
-                            else failCount++;
+                            if (res && res.success) {
+                                successCount++;
+                                console.log(`✓ Added: ${name} (${pid})`);
+                            } else {
+                                failCount++;
+                                console.error(`✗ Failed: ${name} (${pid})`, res);
+                            }
                         } catch (err) {
-                            console.error("Failed to add", name, err);
+                            console.error(`✗ Error adding ${name} (${pid}):`, err);
                             failCount++;
                         }
                     } else {
-                        // Skip row logic or count as fail?
-                        if (name || pid) failCount++; // Count as fail if at least something was there but insufficient
+                        // Missing required fields
+                        skippedCount++;
+                        console.warn(`⊘ Skipped row ${i + 1}: Missing required fields (ID: ${pid || 'missing'}, Name: ${name || 'missing'})`);
                     }
                 }
 
-                alert(`Import Complete!\nSuccess: ${successCount}\nFailed/Skipped: ${failCount}`);
+                let message = `Import Complete!\n\nSuccess: ${successCount}\nFailed: ${failCount}\nSkipped: ${skippedCount}`;
+
+                if (successCount === 0 && skippedCount > 0) {
+                    message += '\n\nAll rows were skipped!\n\nRequired columns:\n- "Participant ID" or "ID"\n- "Full Name" or "Name"\n\nCheck browser console (F12) for details.';
+                }
+
+                alert(message);
                 this.loadParticipantsView();
                 input.value = '';
                 btn.innerHTML = originalText;
                 btn.disabled = false;
             } catch (err) {
                 console.error("Error parsing Excel:", err);
-                alert("Error parsing Excel file. Ensure columns: 'Participant ID', 'Full Name', 'College', 'Department'");
+                alert("Error parsing Excel file.\n\nRequired columns:\n- Participant ID (or ID)\n- Full Name (or Name)\n- College (optional)\n- Department (optional)\n- Phone (optional)\n- Email (optional)\n\nCheck browser console (F12) for details.");
                 const btn = document.querySelector('.admin-header .btn-secondary');
                 if (btn) {
                     btn.innerHTML = '<i class="fa-solid fa-file-excel"></i> Import Excel';

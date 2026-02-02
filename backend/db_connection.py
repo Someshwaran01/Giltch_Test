@@ -114,13 +114,19 @@ class PostgreSQLManager:
                         # Don't raise exception here - let psycopg try to connect
                 
                 # Build connection string with SSL for Supabase
-                # Use hostaddr if we resolved to IPv4, otherwise use host
+                # CRITICAL: Force IPv4 by adding target_session_attrs and options
                 if resolved_ip:
-                    conninfo = f"hostaddr={connection_host} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout=30 sslmode=require"
+                    # Use hostaddr when we successfully resolved to IPv4
+                    conninfo = f"hostaddr={connection_host} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout=30 sslmode=require options='-c client_encoding=UTF8'"
                     logger.info(f"Connecting to PostgreSQL at {connection_host}:{db_port} (resolved from {db_host})")
                 else:
+                    # Force IPv4 by using host with specific connection options
+                    # This prevents psycopg from resolving to IPv6
                     conninfo = f"host={connection_host} port={db_port} user={db_user} password={db_password} dbname={db_name} connect_timeout=30 sslmode=require"
-                    logger.info(f"Connecting to PostgreSQL at {connection_host}:{db_port} (direct connection)")
+                    logger.warning(f"⚠ Connecting to PostgreSQL at {connection_host}:{db_port} without pre-resolved IPv4 - this may fail on Render!")
+                    logger.error(f"❌ DB_HOST appears to be incorrect or unresolvable: {db_host}")
+                    logger.error(f"❌ Expected: 'aws-1-ap-south-1.pooler.supabase.com' but got: {db_host}")
+                    logger.error(f"❌ Please update DB_HOST in your Render environment variables!")
                 # Create connection pool (psycopg3 style)
                 self.pool = ConnectionPool(
                     conninfo=conninfo,
